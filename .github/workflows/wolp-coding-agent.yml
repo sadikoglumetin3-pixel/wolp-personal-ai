@@ -1,0 +1,40 @@
+# wolp-runner-version: 1
+name: Wolp Coding Agent
+run-name: Wolp task ${{ github.event.client_payload.task_id }}
+
+on:
+  repository_dispatch:
+    types: [wolp_coding_task]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: wolp-${{ github.event.client_payload.task_id }}
+  cancel-in-progress: false
+
+jobs:
+  test-and-open-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.branch }}
+          fetch-depth: 0
+
+      - name: Node.js hazırla
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test et ve PR oluştur
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WOLP_TASK_ID: ${{ github.event.client_payload.task_id }}
+          WOLP_TASK_BRANCH: ${{ github.event.client_payload.branch }}
+          WOLP_BASE_BRANCH: ${{ github.event.client_payload.base_branch }}
+          WOLP_TASK_SUMMARY: ${{ github.event.client_payload.summary }}
+        run: node .github/wolp-runner.mjs
