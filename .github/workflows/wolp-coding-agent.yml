@@ -1,40 +1,100 @@
-# wolp-runner-version: 1
-name: Wolp Coding Agent
-run-name: Wolp task ${{ github.event.client_payload.task_id }}
-
+# wolp-runner-version: 3
+name: Wolp Cloud Engine
+run-name: Wolp job ${{ github.event.client_payload.job_id || 'recovery' }}
 on:
   repository_dispatch:
-    types: [wolp_coding_task]
-
+    types: [wolp_cloud_task]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
 permissions:
-  contents: write
-  pull-requests: write
-
+  contents: read
 concurrency:
-  group: wolp-${{ github.event.client_payload.task_id }}
+  group: wolp-cloud-${{ github.event.client_payload.job_id || 'recovery' }}
   cancel-in-progress: false
-
+env:
+  WOLP_SITE_ORIGIN: "https://wolp-personal-ai.sadikoglumetin3.chatgpt.site"
 jobs:
-  test-and-open-pr:
+  recover:
+    if: github.event_name != 'repository_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
-      - name: Kodu indir
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.client_payload.branch }}
-          fetch-depth: 0
-
-      - name: Node.js hazırla
-        uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Test et ve PR oluştur
+      - run: node .github/wolp-cloud-worker.mjs
         env:
-          GH_TOKEN: ${{ github.token }}
-          WOLP_TASK_ID: ${{ github.event.client_payload.task_id }}
-          WOLP_TASK_BRANCH: ${{ github.event.client_payload.branch }}
-          WOLP_BASE_BRANCH: ${{ github.event.client_payload.base_branch }}
-          WOLP_TASK_SUMMARY: ${{ github.event.client_payload.summary }}
-        run: node .github/wolp-runner.mjs
+          WOLP_ENGINE_MODE: recover
+          WOLP_SITES_ACCESS_TOKEN: ${{ secrets.WOLP_SITES_ACCESS_TOKEN }}
+          WOLP_RECOVERY_TOKEN: ${{ secrets.WOLP_ENGINE_RECOVERY_TOKEN }}
+  prepare:
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      ready: ${{ steps.work.outputs.ready }}
+      branch: ${{ steps.work.outputs.branch }}
+      head_sha: ${{ steps.work.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: work
+        run: node .github/wolp-cloud-worker.mjs
+        env:
+          WOLP_ENGINE_MODE: prepare
+          WOLP_JOB_ID: ${{ github.event.client_payload.job_id }}
+          WOLP_JOB_TOKEN: ${{ github.event.client_payload.job_token }}
+          WOLP_SITES_ACCESS_TOKEN: ${{ secrets.WOLP_SITES_ACCESS_TOKEN }}
+  test:
+    needs: prepare
+    if: needs.prepare.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      report: ${{ steps.checks.outputs.report }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: trusted-engine
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          path: task-code
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: checks
+        working-directory: task-code
+        run: node ../trusted-engine/.github/wolp-cloud-checks.mjs
+        env:
+          WOLP_RUN_CHECKS: '1'
+  finish:
+    needs: [prepare, test]
+    if: always() && github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node .github/wolp-cloud-worker.mjs
+        env:
+          WOLP_ENGINE_MODE: ${{ needs.prepare.outputs.ready == 'true' && 'finish' || 'abort' }}
+          WOLP_JOB_ID: ${{ github.event.client_payload.job_id }}
+          WOLP_JOB_TOKEN: ${{ github.event.client_payload.job_token }}
+          WOLP_SITES_ACCESS_TOKEN: ${{ secrets.WOLP_SITES_ACCESS_TOKEN }}
+          WOLP_TEST_RESULT: ${{ needs.test.result }}
+          WOLP_CHECK_REPORT: ${{ needs.test.outputs.report }}
